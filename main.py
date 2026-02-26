@@ -1068,8 +1068,12 @@ class FormTester:
         crawler = WebCrawler(task)
         forms, emails = await crawler.crawl()
 
+        predefined_count = 4  # contacto, contacto/, contact, contact/
+        dynamic_count = max(0, len(task.visited_urls) - predefined_count)
         click.echo(f"\n  📊 Resultados del crawling:")
-        click.echo(f"     - Páginas visitadas: {len(task.visited_urls)}")
+        click.echo(f"     - Páginas predefinidas visitadas: {predefined_count}")
+        click.echo(f"     - Páginas dinámicas visitadas: {dynamic_count} (max: {MAX_PAGES_PER_DOMAIN})")
+        click.echo(f"     - Total páginas visitadas: {len(task.visited_urls)}")
         click.echo(f"     - Formularios encontrados: {len(forms)}")
         click.echo(f"     - Emails encontrados: {len(emails)}")
 
