@@ -55,3 +55,6 @@ CLAUDE.md
 domains.csv
 .claude/
 __pycache__/
+
+# Worktrees
+.worktrees/
