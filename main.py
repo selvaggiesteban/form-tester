@@ -326,6 +326,10 @@ class WebCrawler:
         forms_found = []
         emails_found = set()
 
+        # Contador separado para páginas dinámicas descubiertas
+        self.dynamic_pages_visited = 0
+        max_dynamic_pages = MAX_PAGES_PER_DOMAIN  # 10 páginas
+
         # IP address to mask real IP (RFC 5737 documentation range)
         FAKE_IP = "203.0.113.1"
 
@@ -375,13 +379,24 @@ class WebCrawler:
                     urls_to_visit.append(contact_url)
                     click.echo(f"  📌 URL de contacto agregada: {contact_url}")
 
-            while urls_to_visit and len(self.task.visited_urls) < MAX_PAGES_PER_DOMAIN:
+            while urls_to_visit:
                 url = urls_to_visit.pop(0)
 
                 if url in self.task.visited_urls:
                     continue
 
+                # Verificar si es una URL predefinida o dinámica
+                is_predefined = any(url.endswith(path) or url.rstrip('/').endswith(path.rstrip('/'))
+                                    for path in ["/contacto", "/contact"])
+
+                # Si es dinámica y ya alcanzamos el límite, saltar
+                if not is_predefined and self.dynamic_pages_visited >= max_dynamic_pages:
+                    continue
+
                 self.task.visited_urls.add(url)
+                if not is_predefined:
+                    self.dynamic_pages_visited += 1
+
                 click.echo(f"  🔍 Crawling: {url}")
 
                 response = await self._rate_limited_request(client, url)
