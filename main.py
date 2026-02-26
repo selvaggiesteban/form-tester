@@ -34,7 +34,7 @@ TEST_DATA = {
 # Crawler Settings
 MAX_PAGES_PER_DOMAIN = 10
 REQUEST_TIMEOUT = 30
-USER_AGENT = "FormTesterBot/1.0 (Contact Form Testing Tool)"
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 RATE_LIMIT_DELAY = 1.0  # Seconds between requests to same domain
 MAX_RETRIES = 3
 
@@ -131,6 +131,11 @@ load_dotenv()
 SMTP_USER = os.getenv("FORM_TESTER_SMTP_USER", SMTP_USER)
 SMTP_PASSWORD = os.getenv("FORM_TESTER_SMTP_PASSWORD", SMTP_PASSWORD)
 SMTP_FROM_EMAIL = os.getenv("FORM_TESTER_FROM_EMAIL", SMTP_FROM_EMAIL)
+
+# Proxy Configuration (optional)
+PROXY_URL = os.getenv("FORM_TESTER_PROXY_URL", "")
+HTTP_PROXY = os.getenv("FORM_TESTER_HTTP_PROXY", "")
+HTTPS_PROXY = os.getenv("FORM_TESTER_HTTPS_PROXY", "")
 
 
 # =============================================================================
@@ -321,15 +326,39 @@ class WebCrawler:
         forms_found = []
         emails_found = set()
 
+        # IP address to mask real IP (RFC 5737 documentation range)
+        FAKE_IP = "203.0.113.1"
+
         headers = {
             "User-Agent": USER_AGENT,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.5",
+            "Accept-Encoding": "gzip, deflate, br",
             "DNT": "1",
             "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+            # Headers to mask real IP (some servers may respect these)
+            "X-Forwarded-For": FAKE_IP,
+            "X-Real-IP": FAKE_IP,
+            "Forwarded": f"for={FAKE_IP}",
+            "CF-Connecting-IP": FAKE_IP,
         }
 
-        async with httpx.AsyncClient(headers=headers) as client:
+        # Configure proxy if set
+        proxy_config = None
+        if PROXY_URL:
+            proxy_config = PROXY_URL
+        elif HTTP_PROXY or HTTPS_PROXY:
+            proxy_config = {
+                "http://": HTTP_PROXY or PROXY_URL,
+                "https://": HTTPS_PROXY or PROXY_URL,
+            }
+
+        async with httpx.AsyncClient(headers=headers, proxy=proxy_config) as client:
             urls_to_visit = [self.base_url]
 
             # Agregar URLs de contacto comunes al inicio
@@ -338,10 +367,6 @@ class WebCrawler:
                 "/contacto/",
                 "/contact",
                 "/contact/",
-                "/kontakt",
-                "/kontakt/",
-                "/contactenos",
-                "/contactenos/",
             ]
             base = self.base_url.rstrip('/')
             for contact_path in contact_urls:
@@ -720,11 +745,41 @@ class FormSubmitter:
             from playwright.async_api import async_playwright
 
             async with async_playwright() as p:
+                # Configure proxy for Playwright if set
+                proxy_config = None
+                if PROXY_URL:
+                    proxy_config = {"server": PROXY_URL}
+                elif HTTP_PROXY:
+                    proxy_config = {"server": HTTP_PROXY}
+
                 browser = await p.chromium.launch(headless=True)
-                context = await browser.new_context(
-                    user_agent=USER_AGENT,
-                    viewport={"width": 1280, "height": 720},
-                )
+
+                # IP address to mask real IP
+                FAKE_IP = "203.0.113.1"
+
+                context_options = {
+                    "user_agent": USER_AGENT,
+                    "viewport": {"width": 1280, "height": 720},
+                    "extra_http_headers": {
+                        "Accept-Language": "en-US,en;q=0.5",
+                        "Accept-Encoding": "gzip, deflate, br",
+                        "DNT": "1",
+                        "Upgrade-Insecure-Requests": "1",
+                        "Sec-Fetch-Dest": "document",
+                        "Sec-Fetch-Mode": "navigate",
+                        "Sec-Fetch-Site": "none",
+                        "Sec-Fetch-User": "?1",
+                        "X-Forwarded-For": FAKE_IP,
+                        "X-Real-IP": FAKE_IP,
+                        "Forwarded": f"for={FAKE_IP}",
+                        "CF-Connecting-IP": FAKE_IP,
+                    },
+                }
+
+                if proxy_config:
+                    context_options["proxy"] = proxy_config
+
+                context = await browser.new_context(**context_options)
                 page = await context.new_page()
 
                 # Navigate to the form page

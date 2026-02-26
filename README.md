@@ -297,6 +297,9 @@ Copy-Item .env.example .env
 | `FORM_TESTER_SMTP_USER` | Yes* | SMTP username | `user@gmail.com` |
 | `FORM_TESTER_SMTP_PASSWORD` | Yes* | SMTP password | `app-specific-password` |
 | `FORM_TESTER_FROM_EMAIL` | Optional | From address | `sender@example.com` |
+| `FORM_TESTER_PROXY_URL` | Optional | Proxy URL (SOCKS5/HTTP) | `socks5://user:pass@host:port` |
+| `FORM_TESTER_HTTP_PROXY` | Optional | HTTP proxy URL | `http://proxy.example.com:8080` |
+| `FORM_TESTER_HTTPS_PROXY` | Optional | HTTPS proxy URL | `http://proxy.example.com:8080` |
 
 *Required for SMTP fallback functionality
 
@@ -306,6 +309,23 @@ Copy-Item .env.example .env
 2. Go to [App Passwords](https://myaccount.google.com/apppasswords)
 3. Generate app-specific password
 4. Use that password (not your regular password)
+
+#### Proxy Configuration (Optional)
+
+To route traffic through a proxy and hide your real IP:
+
+```bash
+# SOCKS5 proxy
+export FORM_TESTER_PROXY_URL="socks5://user:pass@host:port"
+
+# HTTP/HTTPS proxy
+export FORM_TESTER_HTTP_PROXY="http://proxy.example.com:8080"
+export FORM_TESTER_HTTPS_PROXY="http://proxy.example.com:8080"
+```
+
+**Note:** Proxies hide your real IP from the target server. The tool also sends fake IP headers (`X-Forwarded-For`, etc.) which some servers may respect, but using a proxy is the only reliable method to completely mask your IP.
+
+**VPN Alternative:** If you don't have proxies, run the tool while connected to a VPN. This will route all traffic through the VPN's IP address.
 
 ---
 
