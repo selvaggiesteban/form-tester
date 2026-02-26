@@ -72,8 +72,10 @@
 
 ### 🤖 Form Interaction
 - **JavaScript Support**: Uses Playwright for JavaScript-heavy forms
+- **AJAX Handling**: Waits for AJAX responses (Contact Form 7, Elementor)
 - **Intelligent Filling**: Maps test data to form fields automatically
 - **Field Classification**: Recognizes name, email, phone, company, subject, message fields
+- **Validation Aware**: Respects HTML5 validation patterns (e.g., phone formats)
 
 ### 🛡️ Protection Detection
 - **CAPTCHA Detection**: Identifies reCAPTCHA, hCAPTCHA, and generic CAPTCHA
@@ -87,6 +89,7 @@
 
 ### 📊 Evidence & Reporting
 - **Screenshots**: Before/after screenshots for every submission
+- **HTML Debug**: Page source saved for diagnostic purposes
 - **CSV Logging**: Structured logging with standardized reason codes
 - **Audit Trail**: Complete evidence package for compliance
 
@@ -409,7 +412,7 @@ TEST_DATA = {
     "email": "test@example.com",
     "subject": "Test Contact Form Submission",
     "message": "This is an automated test message from the form-tester tool.",
-    "phone": "+1-555-123-4567",
+    "phone": "+1-555-123-4567",  # Use hyphens, not spaces, for pattern validation
     "company": "Test Company Inc.",
 }
 
@@ -422,12 +425,44 @@ MAX_RETRIES = 3                 # Retry attempts for failed requests
 
 # Form Detection
 FORM_FIELD_MAPPINGS = {
-    "name": ["name", "nombre", "fullname", "full_name", "your_name"],
-    "email": ["email", "correo", "e-mail", "mail", "email_address"],
-    "subject": ["subject", "asunto", "topic", "title"],
-    "message": ["message", "mensaje", "comments", "comment", "body"],
-    "phone": ["phone", "telefono", "tel", "telephone", "mobile"],
-    "company": ["company", "empresa", "organization", "business"],
+    "name": [
+        "name", "nombre", "fullname", "full_name", "your_name", "contact_name",
+        "first_name", "last_name", "firstname", "lastname", "apellido", "nombres",
+        "from_name", "user_name", "customer_name", "client_name", "visitor_name",
+        "nom", "prenom", "nome", "cognome"
+    ],
+    "email": [
+        "email", "correo", "e-mail", "mail", "email_address", "your_email",
+        "from_email", "contact_email", "user_email", "customer_email", "client_email",
+        "visitor_email", "reply_to", "replyto", "correo_electronico", "email_destinatario",
+        "adresse_email", "courriel", "indirizzo_email"
+    ],
+    "subject": [
+        "subject", "asunto", "topic", "title", "tema", "motivo", "razon",
+        "subject_line", "mail_subject", "message_subject", "consulta_subject",
+        "about", "regarding", "re", "asunto_del_mensaje", "titulo",
+        "sujet", "objet", "oggetto", "assunto"
+    ],
+    "message": [
+        "message", "mensaje", "comments", "comment", "body", "content", "your_message",
+        "msg", "text", "description", "details", "consulta", "consultation",
+        "query", "inquiry", "question", "note", "notes", "additional_info",
+        "more_info", "informacion_adicional", "mensaje_adicional", "comentarios",
+        "textarea", "your_message_text", "message_body", "mail_body",
+        "votre_message", "votre_commentaire", "il_tuo_messaggio"
+    ],
+    "phone": [
+        "phone", "telefono", "tel", "telephone", "mobile", "cell", "cellphone",
+        "phone_number", "telefono_fijo", "celular", "movil", "numero_telefono",
+        "contact_number", "phone_no", "tel_no", "mobile_number", "telefono_contacto",
+        "telephone_portable", "numero_de_telephone", "telefono_cellulare"
+    ],
+    "company": [
+        "company", "empresa", "organization", "business", "firma", "organizacion",
+        "company_name", "business_name", "organization_name", "nombre_empresa",
+        "work_place", "workplace", "employer", "entidad", "razon_social",
+        "societe", "entreprise", "societa", "azienda", "empresa_nome"
+    ],
 }
 ```
 
@@ -536,6 +571,7 @@ invalid@domain.com,Manual addition,2025-01-15T10:15:22
 | `SMTP_ERROR` | ❌ FAILED | Error sending email via SMTP |
 | `UNKNOWN_ERROR` | ❌ FAILED | Unexpected error occurred |
 | `SUPPRESSED` | ⏭️ SKIPPED | Email in suppression list |
+| `FORM_VALIDATION_FAILED` | ❌ FAILED | Form submission validation failed |
 
 ---
 
@@ -582,6 +618,35 @@ playwright install-deps chromium
 # 2. Increase MAX_PAGES_PER_DOMAIN to crawl more pages
 # 3. Check if site blocks automated requests (try increasing RATE_LIMIT_DELAY)
 # 4. Form may use non-standard field names - add to FORM_FIELD_MAPPINGS
+```
+
+#### Form Validation Failed
+
+```bash
+# Problem: FORM_VALIDATION_FAILED error after submission
+
+# Common causes:
+# 1. Phone number format doesn't match field pattern
+#    - Some forms require: +1-555-123-4567 (hyphens only)
+#    - Some forms reject: +1 555 123 4567 (with spaces)
+#
+# 2. Required fields not filled
+#    - Check TEST_DATA has values for all required fields
+#
+# 3. JavaScript validation failing
+#    - Check HTML debug file in evidence/ directory
+#    - Look for error messages in the saved HTML
+
+# Solutions:
+# 1. Update phone format in TEST_DATA:
+TEST_DATA = {
+    "phone": "+1-555-123-4567",  # No spaces
+}
+
+# 2. Check evidence/*.html files for validation error messages
+# 3. Increase wait time for AJAX forms:
+#    - Already built-in for Contact Form 7 and Elementor
+#    - Edit code to add custom waits for other form types
 ```
 
 #### Rate Limited / Blocked

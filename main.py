@@ -21,13 +21,13 @@ SMTP_USER = ""  # Set via environment variable: FORM_TESTER_SMTP_USER
 SMTP_PASSWORD = ""  # Set via environment variable: FORM_TESTER_SMTP_PASSWORD
 SMTP_FROM_EMAIL = ""  # Set via environment variable: FORM_TESTER_FROM_EMAIL
 
-# Test Data
+# Test Data - Configure with your own information
 TEST_DATA = {
     "name": "Test User",
     "email": "test@example.com",
     "subject": "Test Contact Form Submission",
     "message": "This is an automated test message from the form-tester tool.",
-    "phone": "+1-555-123-4567",
+    "phone": "+1-555-123-4567",  # Use hyphens, not spaces, for pattern validation
     "company": "Test Company Inc.",
 }
 
@@ -40,12 +40,44 @@ MAX_RETRIES = 3
 
 # Form Detection
 FORM_FIELD_MAPPINGS = {
-    "name": ["name", "nombre", "fullname", "full_name", "your_name", "contact_name"],
-    "email": ["email", "correo", "e-mail", "mail", "email_address", "your_email"],
-    "subject": ["subject", "asunto", "topic", "title"],
-    "message": ["message", "mensaje", "comments", "comment", "body", "content", "your_message"],
-    "phone": ["phone", "telefono", "tel", "telephone", "mobile", "cell"],
-    "company": ["company", "empresa", "organization", "business", "firma"],
+    "name": [
+        "name", "nombre", "fullname", "full_name", "your_name", "contact_name",
+        "first_name", "last_name", "firstname", "lastname", "apellido", "nombres",
+        "from_name", "user_name", "customer_name", "client_name", "visitor_name",
+        "nom", "prenom", "nome", "cognome"
+    ],
+    "email": [
+        "email", "correo", "e-mail", "mail", "email_address", "your_email",
+        "from_email", "contact_email", "user_email", "customer_email", "client_email",
+        "visitor_email", "reply_to", "replyto", "correo_electronico", "email_destinatario",
+        "adresse_email", "courriel", "indirizzo_email"
+    ],
+    "subject": [
+        "subject", "asunto", "topic", "title", "tema", "motivo", "razon",
+        "subject_line", "mail_subject", "message_subject", "consulta_subject",
+        "about", "regarding", "re", "asunto_del_mensaje", "titulo",
+        "sujet", "objet", "oggetto", "assunto"
+    ],
+    "message": [
+        "message", "mensaje", "comments", "comment", "body", "content", "your_message",
+        "msg", "text", "description", "details", "consulta", "consultation",
+        "query", "inquiry", "question", "note", "notes", "additional_info",
+        "more_info", "informacion_adicional", "mensaje_adicional", "comentarios",
+        "textarea", "your_message_text", "message_body", "mail_body",
+        "votre_message", "votre_commentaire", "il_tuo_messaggio"
+    ],
+    "phone": [
+        "phone", "telefono", "tel", "telephone", "mobile", "cell", "cellphone",
+        "phone_number", "telefono_fijo", "celular", "movil", "numero_telefono",
+        "contact_number", "phone_no", "tel_no", "mobile_number", "telefono_contacto",
+        "telephone_portable", "numero_de_telephone", "telefono_cellulare"
+    ],
+    "company": [
+        "company", "empresa", "organization", "business", "firma", "organizacion",
+        "company_name", "business_name", "organization_name", "nombre_empresa",
+        "work_place", "workplace", "employer", "entidad", "razon_social",
+        "societe", "entreprise", "societa", "azienda", "empresa_nome"
+    ],
 }
 
 # Output Files
@@ -68,6 +100,8 @@ REASON_CODES = {
     "TIMEOUT_ERROR": "Timeout en la solicitud",
     "SMTP_ERROR": "Error al enviar email vía SMTP",
     "UNKNOWN_ERROR": "Error desconocido",
+    "SUPPRESSED": "Email en lista de supresión",
+    "FORM_VALIDATION_FAILED": "Validación del formulario fallida",
 }
 
 # =============================================================================
@@ -291,13 +325,30 @@ class WebCrawler:
             "User-Agent": USER_AGENT,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.5",
-            "Accept-Encoding": "gzip, deflate, br",
             "DNT": "1",
             "Connection": "keep-alive",
         }
 
         async with httpx.AsyncClient(headers=headers) as client:
             urls_to_visit = [self.base_url]
+
+            # Agregar URLs de contacto comunes al inicio
+            contact_urls = [
+                "/contacto",
+                "/contacto/",
+                "/contact",
+                "/contact/",
+                "/kontakt",
+                "/kontakt/",
+                "/contactenos",
+                "/contactenos/",
+            ]
+            base = self.base_url.rstrip('/')
+            for contact_path in contact_urls:
+                contact_url = f"{base}{contact_path}"
+                if contact_url not in urls_to_visit:
+                    urls_to_visit.append(contact_url)
+                    click.echo(f"  📌 URL de contacto agregada: {contact_url}")
 
             while urls_to_visit and len(self.task.visited_urls) < MAX_PAGES_PER_DOMAIN:
                 url = urls_to_visit.pop(0)
@@ -346,22 +397,34 @@ class WebCrawler:
             form_html = form_node.html
             fields = {}
             submit_button = None
+            all_inputs = []  # Para debugging
 
-            # Extract input fields
+            # Extract ALL input fields (incluyendo ocultos para mejor detección)
             for input_node in form_node.css("input, textarea, select"):
-                input_type = input_node.attributes.get("type", "text")
+                input_type = input_node.attributes.get("type", "text").lower()
                 input_name = input_node.attributes.get("name", "")
                 input_id = input_node.attributes.get("id", "")
                 placeholder = input_node.attributes.get("placeholder", "").lower()
 
-                # Skip hidden/submit/button inputs
-                if input_type in ("hidden", "submit", "button", "image"):
+                # Buscar label asociado al campo
+                label_text = self._find_field_label(parser, input_id, input_name)
+
+                all_inputs.append({
+                    "type": input_type,
+                    "name": input_name,
+                    "id": input_id,
+                    "placeholder": placeholder,
+                    "label": label_text,
+                })
+
+                # Skip submit/button inputs para el mapeo de campos
+                if input_type in ("submit", "button", "image"):
                     if input_type == "submit":
                         submit_button = input_name or input_id
                     continue
 
-                # Map field to known types
-                field_key = self._classify_field(input_name, input_id, placeholder)
+                # Map field to known types (incluyendo campos ocultos)
+                field_key = self._classify_field(input_name, input_id, placeholder, label_text)
                 if field_key:
                     fields[field_key] = {
                         "name": input_name,
@@ -371,7 +434,12 @@ class WebCrawler:
                     }
 
             # Check if this looks like a contact form
-            if "email" in fields and ("message" in fields or "name" in fields):
+            # Criterio: debe tener campo email + (mensaje O nombre)
+            has_email = "email" in fields
+            has_message = "message" in fields
+            has_name = "name" in fields
+
+            if has_email and (has_message or has_name):
                 form_data = FormData(url, form_html, fields, submit_button)
 
                 # Check for CAPTCHA
@@ -384,20 +452,56 @@ class WebCrawler:
 
                 # Check for honeypot
                 if self._has_honeypot(form_node):
+                    click.echo(f"        ⚠️  Honeypot detectado, pero se procesará de todos modos")
                     form_data.has_honeypot = True
 
                 forms.append(form_data)
+            elif has_email:
+                # Debug: mostrar por qué no se detectó como formulario de contacto
+                click.echo(f"     ℹ️  Formulario con email encontrado pero sin message/name: {url}")
+                click.echo(f"        Campos detectados: {list(fields.keys())}")
 
         return forms
 
-    def _classify_field(self, name: str, field_id: str, placeholder: str) -> Optional[str]:
-        """Classify a form field based on its attributes."""
-        search_text = f"{name} {field_id} {placeholder}".lower()
+    def _find_field_label(self, parser: LexborHTMLParser, field_id: str, field_name: str) -> str:
+        """Find label text associated with a field."""
+        label_text = ""
+
+        if field_id:
+            # Buscar label con atributo for
+            label_node = parser.css_first(f"label[for='{field_id}']")
+            if label_node:
+                label_text = label_node.text(strip=True).lower()
+
+        if not label_text and field_name:
+            # Buscar label con atributo for por name
+            label_node = parser.css_first(f"label[for='{field_name}']")
+            if label_node:
+                label_text = label_node.text(strip=True).lower()
+
+        return label_text
+
+    def _classify_field(self, name: str, field_id: str, placeholder: str, label_text: str = "") -> Optional[str]:
+        """Classify a form field based on its attributes and label."""
+        search_text = f"{name} {field_id} {placeholder} {label_text}".lower()
 
         for field_type, keywords in FORM_FIELD_MAPPINGS.items():
             for keyword in keywords:
                 if keyword in search_text:
                     return field_type
+
+        # Heurísticas adicionales para campos comunes
+        # Si tiene type="email", es probablemente email
+        if "email" in search_text or "correo" in search_text or "e-mail" in search_text:
+            return "email"
+
+        # Si parece un campo de asunto pero no se detectó antes
+        if any(word in search_text for word in ["asunto", "subject", "tema", "motivo"]):
+            return "subject"
+
+        # Si parece un campo de teléfono
+        if any(word in search_text for word in ["phone", "telefono", "tel", "mobile", "celular"]):
+            return "phone"
 
         return None
 
@@ -415,26 +519,58 @@ class WebCrawler:
         return any(indicator in html_lower for indicator in captcha_indicators)
 
     def _has_honeypot(self, form_node) -> bool:
-        """Check if the form has a honeypot field."""
+        """Check if the form has a honeypot field.
+
+        Honeypots are fields designed to trick bots. They are typically:
+        - Fields hidden from users (display:none, visibility:hidden, off-screen)
+        - Fields with names that sound legitimate but are actually traps
+        """
+        # Contar campos visibles vs ocultos
+        visible_fields = 0
+        hidden_fields = 0
+        honeypot_indicators = 0
+
         for input_node in form_node.css("input"):
-            input_type = input_node.attributes.get("type", "")
-            input_name = input_node.attributes.get("name", "")
-            style = input_node.attributes.get("style", "")
+            input_type = input_node.attributes.get("type", "").lower()
+            input_name = input_node.attributes.get("name", "").lower()
+            style = input_node.attributes.get("style", "").lower()
 
-            # Hidden fields with suspicious names
-            if input_type == "hidden":
-                if any(keyword in input_name.lower() for keyword in ["email", "name", "phone"]):
-                    return True
+            # Saltar campos de tipo submit, button, image
+            if input_type in ("submit", "button", "image"):
+                continue
 
-            # Fields hidden via CSS
-            if "display:none" in style or "visibility:hidden" in style:
-                return True
+            # Verificar si es un campo oculto
+            is_hidden = input_type == "hidden"
+            is_css_hidden = "display:none" in style or "visibility:hidden" in style
+            is_off_screen = "left:-" in style or "top:-" in style
 
-            # Fields positioned off-screen
-            if "left:-" in style or "top:-" in style:
-                return True
+            if is_hidden or is_css_hidden or is_off_screen:
+                hidden_fields += 1
 
-        return False
+                # Solo marcar como honeypot si el campo oculto tiene nombre sospechoso
+                # y NO hay otros campos legítimos visibles en el formulario
+                honeypot_names = ["email", "name", "phone", "url", "website", "company"]
+                if any(keyword in input_name for keyword in honeypot_names):
+                    # Verificar si tiene prefijos/sufijos típicos de honeypot
+                    if any(indicator in input_name for indicator in [
+                        "trap", "honeypot", "bot", "spam", "sneaky",
+                        "_chk", "check", "verify", "validation"
+                    ]):
+                        honeypot_indicators += 1
+            else:
+                visible_fields += 1
+
+        # Es honeypot si hay indicadores fuertes de honeypot
+        # O si hay campos ocultos sospechosos sin campos visibles
+        if honeypot_indicators > 0:
+            return True
+
+        # No es honeypot si hay campos visibles (formulario legítimo)
+        if visible_fields > 0:
+            return False
+
+        # Solo campos ocultos = probable honeypot
+        return hidden_fields > 0 and visible_fields == 0
 
     def _extract_emails(self, parser: LexborHTMLParser, html: str) -> Set[str]:
         """Extract email addresses from the page."""
@@ -467,29 +603,54 @@ class WebCrawler:
         links = []
 
         for link in parser.css("a[href]"):
-            href = link.attributes.get("href", "")
-            if href.startswith(("http://", "https://")):
-                # External link - skip
+            href = link.attributes.get("href", "").strip()
+            text = link.text(strip=True).lower()
+
+            if not href:
                 continue
+
+            # Skip external links (completamente diferentes dominios)
+            if href.startswith(("http://", "https://")):
+                parsed_href = urlparse(href)
+                parsed_base = urlparse(base_url)
+                # Solo incluir si es el mismo dominio
+                if parsed_href.netloc != parsed_base.netloc:
+                    continue
+                full_url = href
+            elif href.startswith("//"):
+                # Protocol-relative URL
+                parsed_base = urlparse(base_url)
+                full_url = f"{parsed_base.scheme}:{href}"
             elif href.startswith("/"):
                 # Absolute path
                 full_url = urljoin(base_url, href)
-                links.append(full_url)
             elif href.startswith(("#", "javascript:", "mailto:", "tel:")):
                 # Skip anchors and special links
                 continue
-            elif href:
+            else:
                 # Relative path
                 full_url = urljoin(base_url, href)
-                links.append(full_url)
+
+            # Normalizar URL (eliminar fragmentos)
+            parsed = urlparse(full_url)
+            full_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+            if parsed.query:
+                full_url += f"?{parsed.query}"
+
+            links.append(full_url)
 
         return links
 
-    def _is_contact_page(self, url: str) -> bool:
-        """Check if URL looks like a contact page."""
-        contact_keywords = ["contact", "contacto", "kontakt", "reach-us", "get-in-touch"]
-        url_lower = url.lower()
-        return any(keyword in url_lower for keyword in contact_keywords)
+    def _is_contact_page(self, text: str) -> bool:
+        """Check if URL or text looks like a contact page."""
+        contact_keywords = [
+            "contact", "contacto", "kontakt", "contactenos",
+            "reach-us", "get-in-touch", "write-us", "escribenos",
+            "help", "support", "ayuda", "soporte",
+            "about", "nosotros", "about-us", "acerca"
+        ]
+        text_lower = text.lower()
+        return any(keyword in text_lower for keyword in contact_keywords)
 
 
 # =============================================================================
@@ -551,8 +712,9 @@ class FormSubmitter:
         self.evidence_dir.mkdir(exist_ok=True)
 
     async def submit_form(self, form: FormData) -> Tuple[bool, str, str]:
-        """Submit a form using Playwright."""
+        """Submit a form using Playwright with proper validation."""
         evidence_path = ""
+        unfilled_fields = []
 
         try:
             from playwright.async_api import async_playwright
@@ -566,18 +728,58 @@ class FormSubmitter:
                 page = await context.new_page()
 
                 # Navigate to the form page
-                await page.goto(form.url, wait_until="networkidle", timeout=30000)
+                response = await page.goto(form.url, wait_until="networkidle", timeout=30000)
+
+                # Check if page loaded successfully
+                if response and response.status >= 400:
+                    await browser.close()
+                    return False, f"HTTP_ERROR: Page returned status {response.status}", ""
 
                 # Fill in form fields
                 for field_type, field_info in form.fields.items():
                     value = TEST_DATA.get(field_type, "")
                     if value:
-                        selector = f"[name='{field_info['name']}']"
-                        try:
-                            await page.fill(selector, value)
-                        except Exception as e:
-                            await browser.close()
-                            return False, f"FORM_FILL_ERROR: Could not fill {field_type}", ""
+                        # Probar múltiples selectores mejorados
+                        selectors = [
+                            f"[name='{field_info['name']}']",
+                            f"#{field_info['id']}",
+                            f"input[name*='{field_info['name']}']",
+                            f"textarea[name*='{field_info['name']}']",
+                            f"input[placeholder*='{field_info['name']}']",
+                            f"textarea[placeholder*='{field_info['name']}']",
+                            f"input[type='{field_info['type']}']",
+                        ]
+                        filled = False
+                        for selector in selectors:
+                            try:
+                                # Check if element exists and is visible
+                                element = await page.query_selector(selector)
+                                if element:
+                                    is_visible = await element.is_visible()
+                                    if is_visible:
+                                        await page.fill(selector, value)
+                                        filled = True
+                                        break
+                            except:
+                                continue
+                        if not filled:
+                            unfilled_fields.append(field_type)
+                            if field_type in ["email", "message"]:
+                                click.echo(f"        ⚠️  No se pudo llenar campo CRÍTICO {field_type}")
+                            else:
+                                click.echo(f"        ℹ️  Campo opcional {field_type} no encontrado, continuando...")
+
+                # Check if critical fields were not filled
+                critical_fields = ["email", "message"]
+                missing_critical = [f for f in critical_fields if f in form.fields and f in unfilled_fields]
+                if missing_critical:
+                    await browser.close()
+                    return False, f"FORM_FILL_ERROR: Could not fill critical fields: {', '.join(missing_critical)}", ""
+
+                # Log optional fields that were skipped
+                optional_unfilled = [f for f in unfilled_fields if f not in critical_fields]
+                if optional_unfilled:
+                    click.echo(f"        ℹ️  Campos opcionales omitidos: {', '.join(optional_unfilled)}")
 
                 # Take screenshot before submission
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -587,8 +789,13 @@ class FormSubmitter:
                 evidence_path = str(screenshot_path)
 
                 # Submit the form
+                submit_clicked = False
                 if form.submit_button:
-                    await page.click(f"[name='{form.submit_button}']")
+                    try:
+                        await page.click(f"[name='{form.submit_button}']")
+                        submit_clicked = True
+                    except:
+                        pass
                 else:
                     # Try to find submit button
                     submit_selectors = [
@@ -597,27 +804,168 @@ class FormSubmitter:
                         "button:has-text('Send')",
                         "button:has-text('Submit')",
                         "button:has-text('Enviar')",
+                        "button:has-text('Enviar mensaje')",
+                        "button:has-text('Contactar')",
+                        "button:has-text('Enviar correo')",
+                        "input[value*='Enviar']",
+                        "input[value*='Send']",
+                        "input[value*='Submit']",
                     ]
                     for selector in submit_selectors:
                         try:
                             await page.click(selector, timeout=2000)
+                            submit_clicked = True
                             break
                         except:
                             continue
 
-                # Wait for response
-                await page.wait_for_load_state("networkidle", timeout=10000)
+                if not submit_clicked:
+                    await browser.close()
+                    return False, "FORM_SUBMIT_ERROR: Could not find or click submit button", evidence_path
+
+                # Wait for response with multiple strategies
+                # Para WordPress/Contact Form 7, esperar respuesta AJAX
+                try:
+                    # Intentar detectar respuesta AJAX de Contact Form 7
+                    await page.wait_for_selector(".wpcf7-response-output", timeout=10000)
+                except:
+                    # Si no es CF7, esperar carga normal
+                    try:
+                        await page.wait_for_load_state("networkidle", timeout=10000)
+                    except:
+                        # Networkidle might not fire, wait for timeout or domcontentloaded
+                        try:
+                            await page.wait_for_load_state("domcontentloaded", timeout=5000)
+                        except:
+                            pass
+
+                # Esperar un poco más para AJAX
+                await asyncio.sleep(2)
 
                 # Take screenshot after submission
                 screenshot_path_after = self.evidence_dir / f"{domain}_{timestamp}_after.png"
                 await page.screenshot(path=str(screenshot_path_after), full_page=True)
 
+                # Wait a bit for any AJAX responses (WordPress/Contact Form 7)
+                await asyncio.sleep(2)
+
+                # Validate submission result
+                validation_result = await self._validate_submission(page)
+
+                # Siempre guardar HTML para diagnóstico (tanto éxito como fallo)
+                html_path = self.evidence_dir / f"{domain}_{timestamp}_debug.html"
+                try:
+                    html_content = await page.content()
+                    with open(html_path, "w", encoding="utf-8") as f:
+                        f.write(html_content)
+                    if not validation_result["success"]:
+                        click.echo(f"        📝 HTML guardado para diagnóstico: {html_path}")
+                except Exception as e:
+                    click.echo(f"        ⚠️  No se pudo guardar HTML: {e}")
+
                 await browser.close()
 
-                return True, "FORM_SUBMITTED_SUCCESS", evidence_path
+                if validation_result["success"]:
+                    return True, "FORM_SUBMITTED_SUCCESS", evidence_path
+                else:
+                    return False, f"FORM_VALIDATION_FAILED: {validation_result['reason']}", evidence_path
 
         except Exception as e:
-            return False, f"UNKNOWN_ERROR: {str(e)}", ""
+            return False, f"UNKNOWN_ERROR: {str(e)}", evidence_path
+
+    async def _validate_submission(self, page) -> dict:
+        """Validate if the form submission was successful by checking page content."""
+        try:
+            # Get page content and URL
+            content = await page.content()
+            content_lower = content.lower()
+            url = page.url
+
+            # Success indicators in multiple languages
+            success_indicators = [
+                "gracias", "thank you", "thanks", "merci", "grazie",
+                "mensaje enviado", "message sent", "sent successfully",
+                "enviado correctamente", "sent successfully",
+                "mensaje recibido", "message received",
+                "contacto recibido", "contact received",
+                "success", "éxito", "succès", "successo",
+                "confirmación", "confirmation",
+                "nos pondremos en contacto", "we will contact you",
+                "respuesta enviada", "response submitted",
+                # Contact Form 7 específico
+                "wpcf7-mail-sent-ok",
+                # Elementor específico
+                "elementor-message-success",
+                "form submitted successfully",
+            ]
+
+            # Server/Technical error indicators - específicos para errores reales
+            error_indicators = [
+                # Errores HTTP explícitos
+                "http error", "server error", "internal server error",
+                "bad request", "forbidden", "unauthorized",
+                # Errores de envío específicos
+                "failed to send", "no se pudo enviar", "could not send",
+                "message failed", "el mensaje no se pudo enviar",
+                "envío fallido", "submission failed",
+                # Errores de validación de servidor
+                "validation failed", "invalid submission",
+                "spam detected", "blocked",
+            ]
+
+            # Field validation indicators - estos son solo validaciones, no errores del servidor
+            field_validation_indicators = [
+                "required", "requerido", "obligatorio", "requis",
+                "por favor complete", "please fill",
+                "campo vacío", "empty field", "missing", "falta", "manquant",
+            ]
+
+            # Check for success indicators
+            found_success = any(indicator in content_lower for indicator in success_indicators)
+
+            # Check for server/technical errors (solo errores específicos, no la palabra "error" sola)
+            found_error = any(indicator in content_lower for indicator in error_indicators)
+
+            # Check for field validation messages
+            found_field_validation = any(indicator in content_lower for indicator in field_validation_indicators)
+
+            # Check for form still present (might indicate submission failed)
+            form_still_present = await page.query_selector("form") is not None
+
+            # Analyze result
+            if found_error and not found_success:
+                return {"success": False, "reason": "Error messages detected on page"}
+
+            # Si hay validación de campo pero no error del servidor, podría ser por campos opcionales faltantes
+            # Intentar continuar si no hay error técnico grave
+            if found_field_validation and not found_success and not found_error:
+                # Si el formulario ya no está presente, probablemente se envió
+                if not form_still_present:
+                    return {"success": True, "reason": "Form submitted (field validation messages may indicate optional fields)"}
+
+            if found_success:
+                return {"success": True, "reason": "Success message detected"}
+
+            # If URL changed (redirected), likely successful
+            # but we can't be 100% sure without more context
+
+            # If no clear indicators, be conservative
+            if not found_success and not found_error:
+                # Check if we're on a thank-you or confirmation page
+                if any(word in url.lower() for word in ["thank", "gracias", "confirm", "success"]):
+                    return {"success": True, "reason": "Redirected to success/confirmation page"}
+
+                # If form is still there and no success message, likely failed
+                if form_still_present:
+                    return {"success": False, "reason": "Form still present, no success confirmation detected"}
+
+                # Ambiguous case - form gone but no confirmation
+                return {"success": False, "reason": "No success confirmation detected after submission"}
+
+            return {"success": found_success, "reason": "Based on page content analysis"}
+
+        except Exception as e:
+            return {"success": False, "reason": f"Validation error: {str(e)}"}
 
 
 # =============================================================================
@@ -641,11 +989,17 @@ class FormTester:
         click.echo(f"🌐 Procesando: {domain}")
         click.echo(f"{'='*60}")
 
+        # Crear directorio de evidencias si no existe
+        evidence_dir = Path(EVIDENCE_DIR)
+        evidence_dir.mkdir(exist_ok=True)
+        click.echo(f"  📁 Directorio de evidencias: {evidence_dir.absolute()}")
+
         # Crawl the domain
         crawler = WebCrawler(task)
         forms, emails = await crawler.crawl()
 
-        click.echo(f"  📊 Resultados del crawling:")
+        click.echo(f"\n  📊 Resultados del crawling:")
+        click.echo(f"     - Páginas visitadas: {len(task.visited_urls)}")
         click.echo(f"     - Formularios encontrados: {len(forms)}")
         click.echo(f"     - Emails encontrados: {len(emails)}")
 
@@ -782,6 +1136,20 @@ def process(schedule: Optional[str], domain: Optional[str], output: str):
     click.echo(f"{'='*60}")
     click.echo(f"   Total procesados: {len(results)}")
     click.echo(f"   Resultados guardados en: {output}")
+
+    # Explicación sobre evidence/
+    evidence_dir = Path(EVIDENCE_DIR)
+    if evidence_dir.exists():
+        evidence_files = list(evidence_dir.glob("*.png"))
+        click.echo(f"   Evidencias (screenshots): {len(evidence_files)}")
+        if len(evidence_files) == 0:
+            click.echo(f"\n   ℹ️  Nota: La carpeta evidence/ está vacía porque:")
+            click.echo(f"      - No se encontraron formularios de contacto, O")
+            click.echo(f"      - Los formularios encontrados tenían CAPTCHA/honeypot")
+            click.echo(f"      - Las evidencias solo se guardan cuando se intenta")
+            click.echo(f"        enviar un formulario (no en fallback de email)")
+    else:
+        click.echo(f"   ⚠️  Directorio de evidencias no existe: {EVIDENCE_DIR}")
 
 
 @cli.command()
