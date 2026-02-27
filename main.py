@@ -122,7 +122,7 @@ from urllib.parse import urljoin, urlparse
 import click
 import httpx
 from dotenv import load_dotenv
-from selectolax.lexbor import LexborHTMLParser
+from bs4 import BeautifulSoup
 
 # Load environment variables
 load_dotenv()
@@ -388,13 +388,15 @@ class WebCrawler:
                 # Verificar si es una URL predefinida o dinámica
                 is_predefined = any(url.endswith(path) or url.rstrip('/').endswith(path.rstrip('/'))
                                     for path in ["/contacto", "/contact"])
+                # La homepage (URL base) se considera seed, no dinámica
+                is_seed = url.rstrip('/') == self.base_url.rstrip('/')
 
                 # Si es dinámica y ya alcanzamos el límite, saltar
-                if not is_predefined and self.dynamic_pages_visited >= max_dynamic_pages:
+                if not is_predefined and not is_seed and self.dynamic_pages_visited >= max_dynamic_pages:
                     continue
 
                 self.task.visited_urls.add(url)
-                if not is_predefined:
+                if not is_predefined and not is_seed:
                     self.dynamic_pages_visited += 1
 
                 click.echo(f"  🔍 Crawling: {url}")
@@ -407,47 +409,99 @@ class WebCrawler:
                 if "text/html" not in content_type:
                     continue
 
-                # Parse HTML
-                html_content = response.text
-                parser = LexborHTMLParser(html_content)
+                # Parse HTML - manejo manual de compresión
+                # Algunos servidores envían gzip sin marcar Content-Encoding correctamente
+                content_bytes = response.content
+
+                # Detectar y descomprimir contenido si es necesario
+                if content_bytes[:2] == b'\x1f\x8b':  # Magic bytes gzip
+                    click.echo(f"     📦 Descomprimiendo gzip...")
+                    try:
+                        import gzip
+                        content_bytes = gzip.decompress(content_bytes)
+                    except Exception as e:
+                        click.echo(f"     ⚠️  Error al descomprimir gzip: {e}")
+                elif content_bytes[:4] == b'\x04\x22\x4d\x18':  # Magic bytes brotli
+                    click.echo(f"     📦 Descomprimiendo brotli...")
+                    try:
+                        import brotli
+                        content_bytes = brotli.decompress(content_bytes)
+                    except Exception as e:
+                        click.echo(f"     ⚠️  Error al descomprimir brotli: {e}")
+
+                # Decodificar a string
+                try:
+                    html_content = content_bytes.decode('utf-8')
+                except UnicodeDecodeError:
+                    html_content = content_bytes.decode('utf-8', errors='replace')
+
+                html_size = len(html_content)
+                click.echo(f"     [DEBUG] HTML size: {html_size} bytes")
+
+                if html_size < 100:
+                    click.echo(f"     ⚠️  HTML muy pequeño, posiblemente página vacía o redirección")
+                    continue
+
+                # Debug: ver primeros 500 caracteres del HTML
+                click.echo(f"     [DEBUG] HTML preview: {html_content[:500]}")
+
+                soup = BeautifulSoup(html_content, 'html.parser')
+
+                # Debug: verificar que BeautifulSoup funcionó
+                click.echo(f"     [DEBUG] BeautifulSoup object type: {type(soup)}")
+                click.echo(f"     [DEBUG] HTML title: {soup.title.string if soup.title else 'No title'}")
 
                 # Look for contact forms
-                page_forms = self._extract_forms(parser, url, html_content)
+                page_forms = self._extract_forms(soup, url, html_content)
                 forms_found.extend(page_forms)
 
                 # Look for emails
-                page_emails = self._extract_emails(parser, html_content)
+                page_emails = self._extract_emails(soup, html_content)
                 emails_found.update(page_emails)
 
                 # Find links to follow
-                new_urls = self._extract_links(parser, url)
+                new_urls = self._extract_links(soup, url, html_content)
+                if new_urls:
+                    click.echo(f"     ↳ Enlaces encontrados: {len(new_urls)}")
+                    for i, new_url in enumerate(new_urls[:5]):  # Show first 5
+                        click.echo(f"       - {new_url}")
+                    if len(new_urls) > 5:
+                        click.echo(f"       ... y {len(new_urls) - 5} más")
+                else:
+                    click.echo(f"     ⚠️  No se encontraron enlaces en {url}")
+                added_count = 0
                 for new_url in new_urls:
-                    if self._is_contact_page(new_url) and new_url not in self.task.visited_urls:
-                        urls_to_visit.insert(0, new_url)  # Prioritize contact pages
-                    elif new_url not in self.task.visited_urls:
-                        urls_to_visit.append(new_url)
+                    if new_url not in self.task.visited_urls and new_url not in urls_to_visit:
+                        if self._is_contact_page(new_url):
+                            urls_to_visit.insert(0, new_url)  # Prioritize contact pages
+                            added_count += 1
+                        else:
+                            urls_to_visit.append(new_url)
+                            added_count += 1
+                if added_count > 0:
+                    click.echo(f"     ↳ URLs agregadas a la cola: {added_count} (total en cola: {len(urls_to_visit)})")
 
         return forms_found, emails_found
 
-    def _extract_forms(self, parser: LexborHTMLParser, url: str, html: str) -> List[FormData]:
+    def _extract_forms(self, soup: BeautifulSoup, url: str, html: str) -> List[FormData]:
         """Extract contact forms from the page."""
         forms = []
 
-        for form_node in parser.css("form"):
-            form_html = form_node.html
+        for form_node in soup.find_all("form"):
+            form_html = str(form_node)
             fields = {}
             submit_button = None
             all_inputs = []  # Para debugging
 
             # Extract ALL input fields (incluyendo ocultos para mejor detección)
-            for input_node in form_node.css("input, textarea, select"):
-                input_type = input_node.attributes.get("type", "text").lower()
-                input_name = input_node.attributes.get("name", "")
-                input_id = input_node.attributes.get("id", "")
-                placeholder = input_node.attributes.get("placeholder", "").lower()
+            for input_node in form_node.find_all(["input", "textarea", "select"]):
+                input_type = input_node.get("type", "text").lower()
+                input_name = input_node.get("name", "")
+                input_id = input_node.get("id", "")
+                placeholder = input_node.get("placeholder", "").lower()
 
                 # Buscar label asociado al campo
-                label_text = self._find_field_label(parser, input_id, input_name)
+                label_text = self._find_field_label(soup, input_id, input_name)
 
                 all_inputs.append({
                     "type": input_type,
@@ -503,21 +557,21 @@ class WebCrawler:
 
         return forms
 
-    def _find_field_label(self, parser: LexborHTMLParser, field_id: str, field_name: str) -> str:
+    def _find_field_label(self, soup: BeautifulSoup, field_id: str, field_name: str) -> str:
         """Find label text associated with a field."""
         label_text = ""
 
         if field_id:
             # Buscar label con atributo for
-            label_node = parser.css_first(f"label[for='{field_id}']")
+            label_node = soup.find("label", attrs={"for": field_id})
             if label_node:
-                label_text = label_node.text(strip=True).lower()
+                label_text = label_node.get_text(strip=True).lower()
 
         if not label_text and field_name:
             # Buscar label con atributo for por name
-            label_node = parser.css_first(f"label[for='{field_name}']")
+            label_node = soup.find("label", attrs={"for": field_name})
             if label_node:
-                label_text = label_node.text(strip=True).lower()
+                label_text = label_node.get_text(strip=True).lower()
 
         return label_text
 
@@ -570,10 +624,10 @@ class WebCrawler:
         hidden_fields = 0
         honeypot_indicators = 0
 
-        for input_node in form_node.css("input"):
-            input_type = input_node.attributes.get("type", "").lower()
-            input_name = input_node.attributes.get("name", "").lower()
-            style = input_node.attributes.get("style", "").lower()
+        for input_node in form_node.find_all("input"):
+            input_type = input_node.get("type", "").lower()
+            input_name = input_node.get("name", "").lower()
+            style = input_node.get("style", "").lower()
 
             # Saltar campos de tipo submit, button, image
             if input_type in ("submit", "button", "image"):
@@ -612,13 +666,13 @@ class WebCrawler:
         # Solo campos ocultos = probable honeypot
         return hidden_fields > 0 and visible_fields == 0
 
-    def _extract_emails(self, parser: LexborHTMLParser, html: str) -> Set[str]:
+    def _extract_emails(self, soup: BeautifulSoup, html: str) -> Set[str]:
         """Extract email addresses from the page."""
         emails = set()
 
         # Look for mailto: links
-        for link in parser.css("a[href^='mailto:']"):
-            href = link.attributes.get("href", "")
+        for link in soup.find_all("a", href=True):
+            href = link["href"]
             if href.startswith("mailto:"):
                 email = href[7:].split("?")[0].strip()
                 if self._is_valid_email(email):
@@ -638,46 +692,56 @@ class WebCrawler:
         pattern = r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}$'
         return bool(re.match(pattern, email))
 
-    def _extract_links(self, parser: LexborHTMLParser, base_url: str) -> List[str]:
+    def _extract_links(self, soup: BeautifulSoup, base_url: str, html: str = "") -> List[str]:
         """Extract internal links from the page."""
         links = []
+        seen = set()  # Evitar duplicados
+        parsed_base = urlparse(base_url)
+        base_domain = parsed_base.netloc
 
-        for link in parser.css("a[href]"):
-            href = link.attributes.get("href", "").strip()
-            text = link.text(strip=True).lower()
+        # Find all links
+        all_links = soup.find_all("a", href=True)
+        click.echo(f"     [DEBUG] Total <a> tags: {len(soup.find_all('a'))}, con href: {len(all_links)}")
 
-            if not href:
-                continue
+        for link in all_links:
+            try:
+                href = link["href"].strip()
 
-            # Skip external links (completamente diferentes dominios)
-            if href.startswith(("http://", "https://")):
-                parsed_href = urlparse(href)
-                parsed_base = urlparse(base_url)
-                # Solo incluir si es el mismo dominio
-                if parsed_href.netloc != parsed_base.netloc:
+                if not href:
                     continue
-                full_url = href
-            elif href.startswith("//"):
-                # Protocol-relative URL
-                parsed_base = urlparse(base_url)
-                full_url = f"{parsed_base.scheme}:{href}"
-            elif href.startswith("/"):
-                # Absolute path
-                full_url = urljoin(base_url, href)
-            elif href.startswith(("#", "javascript:", "mailto:", "tel:")):
+
                 # Skip anchors and special links
-                continue
-            else:
-                # Relative path
+                if href.startswith(("#", "javascript:", "mailto:", "tel:", "data:")):
+                    continue
+
+                # Resolve relative URLs
                 full_url = urljoin(base_url, href)
+                parsed = urlparse(full_url)
 
-            # Normalizar URL (eliminar fragmentos)
-            parsed = urlparse(full_url)
-            full_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
-            if parsed.query:
-                full_url += f"?{parsed.query}"
+                # Only same domain links
+                if parsed.netloc != base_domain:
+                    continue
 
-            links.append(full_url)
+                # Normalize URL (remove fragments)
+                full_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+                if parsed.query:
+                    full_url += f"?{parsed.query}"
+
+                # Avoid duplicates and current URL
+                normalized = full_url.rstrip('/')
+                if normalized not in seen and normalized != base_url.rstrip('/'):
+                    seen.add(normalized)
+                    links.append(full_url)
+            except Exception as e:
+                continue
+
+        # Debug: show some found links
+        if links:
+            click.echo(f"     [DEBUG] Enlaces internos encontrados: {len(links)}")
+            for i, link in enumerate(links[:3]):
+                click.echo(f"       - {link}")
+        else:
+            click.echo(f"     [DEBUG] No se encontraron enlaces internos")
 
         return links
 
@@ -1069,8 +1133,11 @@ class FormTester:
         forms, emails = await crawler.crawl()
 
         predefined_count = 4  # contacto, contacto/, contact, contact/
-        dynamic_count = max(0, len(task.visited_urls) - predefined_count)
+        # La homepage es seed, las predefinidas son las de contacto, el resto son dinámicas
+        seed_count = 1  # homepage
+        dynamic_count = max(0, len(task.visited_urls) - predefined_count - seed_count)
         click.echo(f"\n  📊 Resultados del crawling:")
+        click.echo(f"     - Página inicial (seed): {seed_count}")
         click.echo(f"     - Páginas predefinidas visitadas: {predefined_count}")
         click.echo(f"     - Páginas dinámicas visitadas: {dynamic_count} (max: {MAX_PAGES_PER_DOMAIN})")
         click.echo(f"     - Total páginas visitadas: {len(task.visited_urls)}")
